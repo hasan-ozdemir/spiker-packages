@@ -30,6 +30,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: publish-spiker-setup-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.source_ref || github.ref_name }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -42,6 +46,7 @@ jobs:
       SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.client_payload.source_run_id }}
       SOURCE_RUN_URL: ${{ github.event_name == 'workflow_dispatch' && format('https://github.com/{0}/actions/runs/{1}', inputs.source_repository, inputs.source_run_id) || github.event.client_payload.source_run_url }}
       SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && 'manual' || github.event.client_payload.source_ref }}
+      SOURCE_EVENT: ${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || github.event.client_payload.source_event }}
       SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && '' || github.event.client_payload.source_sha }}
       ARTIFACT_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_name || github.event.client_payload.artifact_name }}
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.client_payload.release_tag }}
@@ -137,3 +142,49 @@ jobs:
             fi
             gh "${args[@]}"
           fi
+
+      - name: Cut over old releases
+        if: ${{ env.SOURCE_EVENT == 'push' && env.SOURCE_REF == 'main' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t release_tags < <(gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 1000 \
+            --json tagName \
+            --jq '.[].tagName')
+
+          deleted=0
+          for tag in "${release_tags[@]}"; do
+            if [[ "$tag" == "$RELEASE_TAG" ]]; then
+              continue
+            fi
+
+            echo "Deleting old release and tag: $tag"
+            gh release delete "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cleanup-tag \
+              --yes
+            deleted=$((deleted + 1))
+          done
+
+          mapfile -t remaining_tags < <(gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 1000 \
+            --json tagName \
+            --jq '.[].tagName')
+
+          remaining_count="${#remaining_tags[@]}"
+          if [[ "$remaining_count" -ne 1 ]]; then
+            printf '::error::Expected only release %s to remain; found: %s\n' "$RELEASE_TAG" "${remaining_tags[*]:-<none>}"
+            exit 6
+          fi
+
+          if [[ "${remaining_tags[0]}" != "$RELEASE_TAG" ]]; then
+            printf '::error::Expected remaining release %s; found %s\n' "$RELEASE_TAG" "${remaining_tags[0]}"
+            exit 6
+          fi
+
+          echo "Cutover complete. Deleted $deleted old release(s); kept $RELEASE_TAG."

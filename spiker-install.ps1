@@ -291,6 +291,26 @@ function Save-SetupAsset {
     }
 }
 
+function Get-SetupExitCode {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ExitCodePath
+    )
+
+    $processExitCode = if ($null -ne $Process.ExitCode) { [int]$Process.ExitCode } else { 0 }
+    if (-not (Test-Path -LiteralPath $ExitCodePath)) {
+        return $processExitCode
+    }
+
+    $raw = (Get-Content -LiteralPath $ExitCodePath -Raw -ErrorAction Stop).Trim()
+    $innerExitCode = 0
+    if (-not [int]::TryParse($raw, [ref]$innerExitCode)) {
+        throw "Kurulum sonucunu bildiren dosya okunamadı: $ExitCodePath"
+    }
+
+    return $innerExitCode
+}
+
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
@@ -309,17 +329,21 @@ try {
     Write-Info 'Yönetici izni doğrulandı.'
     $installDirectory = Get-SafeInstallDirectory
     $setupPath = Join-Path $installDirectory $assetName
+    $setupExitCodePath = Join-Path $installDirectory 'spiker-setup-exit-code.txt'
     $asset = Get-LatestSetupAsset
 
     Save-SetupAsset -Asset $asset -Destination $setupPath
 
     Write-Info 'Kurulum asistanı başlatılıyor. PowerShell penceresi gizlenecek.'
-    $process = Start-Process -FilePath $setupPath -WorkingDirectory $installDirectory -WindowStyle Normal -PassThru
+    $process = Start-Process -FilePath $setupPath -ArgumentList @(
+        '--spiker-sfx-exit-file',
+        "`"$setupExitCodePath`""
+    ) -WorkingDirectory $installDirectory -WindowStyle Normal -PassThru
     Hide-ConsoleWindow
     $process.WaitForExit()
 
-    $exitCode = if ($null -ne $process.ExitCode) { [int]$process.ExitCode } else { 0 }
-    if ($exitCode -ne 0) {
+    $exitCode = Get-SetupExitCode -Process $process -ExitCodePath $setupExitCodePath
+    if (@(0, 3010) -notcontains $exitCode) {
         throw "Spiker kurulumu $exitCode çıkış koduyla sonlandı."
     }
 }

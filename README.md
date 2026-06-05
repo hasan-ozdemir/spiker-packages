@@ -16,9 +16,9 @@ En kolay yöntem:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/hasan-ozdemir/spiker-packages/main/spiker-install.ps1 | iex"
 ```
 
-Bu komut, bu repodaki `spiker-install.ps1` scriptini indirip çalıştırır. Script sizi PowerShell penceresinde yönlendirir; yönetici izni gerekiyorsa Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan `spiker-setup.exe` dosyası Windows geçici klasöründeki `spiker-setup` klasörüne indirilir.
+Bu komut, bu repodaki `spiker-install.ps1` scriptini indirip çalıştırır. Script sizi PowerShell penceresinde yönlendirir; yönetici izni gerekiyorsa Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan sıkıştırılmış `spiker-setup.exe` dosyası Windows geçici klasöründeki `spiker-setup` klasörüne indirilir.
 
-Kurulum asistanı açıldığında PowerShell penceresi otomatik gizlenir. Kurulum asistanı kapandığında geçici `spiker-setup` klasörü içindeki dosyalarla birlikte silinir.
+Kurulum paketi arada 7-Zip penceresi göstermeden sessizce açılır ve Spiker kurulum asistanı başlar. Kurulum asistanı açıldığında PowerShell penceresi otomatik gizlenir. Kurulum asistanı kapandığında geçici `spiker-setup` klasörü içindeki dosyalarla birlikte silinir.
 
 ## Elle İndirme
 
@@ -40,7 +40,7 @@ Kurulum paketi `C:\prodyum\spiker` altına kurulur. Mevcut ayarlar korunur; gün
 
 ## Güvenlik Notu
 
-`spiker-install.ps1` yalnızca bu repodaki en son release içindeki `spiker-setup.exe` dosyasını indirir. İndirme HTTPS üzerinden yapılır; GitHub release asset digest bilgisi varsa SHA256 doğrulaması da yapılır. Script yürütme izni bu oturum için otomatik olarak güvenli şekilde ayarlanmaya çalışılır; kalıcı kullanıcı izni gerekirse PowerShell sizden onay ister.
+`spiker-install.ps1` yalnızca bu repodaki en son release içindeki `spiker-setup.exe` dosyasını indirir. İndirme HTTPS üzerinden yapılır; GitHub release asset digest bilgisi varsa SHA256 doğrulaması da yapılır. Script, sıkıştırılmış dış paketin değil gerçek Spiker kurulum asistanının çıkış sonucunu kontrol eder; kullanıcı isteğiyle kapatma normal kabul edilir, gerçek kurulum hataları bildirilir. Script yürütme izni bu oturum için otomatik olarak güvenli şekilde ayarlanmaya çalışılır; kalıcı kullanıcı izni gerekirse PowerShell sizden onay ister.
 
 ## Yayın Akışı
 

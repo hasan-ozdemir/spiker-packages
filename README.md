@@ -13,10 +13,10 @@ En kolay yöntem:
 3. Enter'a basın ve açılan Spiker kurulum penceresini takip edin.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$h=@{'User-Agent'='spiker-install'}; $sha=(irm -UseBasicParsing -Headers $h 'https://api.github.com/repos/hasan-ozdemir/spiker-packages/branches/main').commit.sha; irm -UseBasicParsing -Headers $h ('https://raw.githubusercontent.com/hasan-ozdemir/spiker-packages/' + $sha + '/spiker-install.ps1') | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/hasan-ozdemir/spiker-packages/main/spiker-install.ps1 | iex"
 ```
 
-Bu komut, önce GitHub API üzerinden `main` dalının son commit SHA'sını alır, sonra `spiker-install.ps1` scriptini o SHA üzerinden indirip çalıştırır. Bu yöntem GitHub raw branch cache'ine takılmadan son push edilen scripti kullanmak içindir. Script Windows PowerShell 5.1 ve yönetici izni gerektirir; gerekirse kendini bu oturumda yeniden başlatır ve Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan sıkıştırılmış `spiker-setup.exe` dosyası Windows geçici klasöründeki `spiker-setup` klasörüne indirilir.
+Bu komut, bu repodaki küçük `spiker-install.ps1` wrapper scriptini indirip çalıştırır. Wrapper, GitHub API üzerinden `main` dalının son commit SHA'sını alır ve gerçek kurulum iş akışını o committeki `spiker-setup-downloader.ps1` dosyasına devreder. Script Windows PowerShell 5.1 ve yönetici izni gerektirir; gerekirse kendini bu oturumda yeniden başlatır ve Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan sıkıştırılmış `spiker-setup.exe` dosyası Windows geçici klasöründeki `spiker-setup` klasörüne indirilir.
 
 Kurulum paketi arada 7-Zip penceresi göstermeden sessizce açılır ve Spiker kurulum asistanı başlar. Kurulum asistanı açıldığında PowerShell penceresi otomatik gizlenir. Kurulum asistanı kapandığında geçici `spiker-setup` klasörü içindeki dosyalarla birlikte silinir.
 

@@ -1,10 +1,47 @@
-param()
+﻿param(
+    [Parameter(Mandatory = $false)]
+    [switch]$RelaunchedForRequiredHost
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
+$script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$script:Utf8Bom = New-Object System.Text.UTF8Encoding $true
+
+function Set-SpikerUtf8Console {
+    try {
+        $chcp = if (-not [string]::IsNullOrWhiteSpace($env:WINDIR)) {
+            Join-Path $env:WINDIR 'System32\chcp.com'
+        }
+        else {
+            'chcp.com'
+        }
+
+        if (Get-Command $chcp -ErrorAction SilentlyContinue) {
+            & $chcp 65001 | Out-Null
+        }
+    }
+    catch {
+    }
+
+    try {
+        [Console]::InputEncoding = $script:Utf8NoBom
+    }
+    catch {
+    }
+
+    try {
+        [Console]::OutputEncoding = $script:Utf8NoBom
+    }
+    catch {
+    }
+
+    $script:OutputEncoding = $script:Utf8NoBom
+    $global:OutputEncoding = $script:Utf8NoBom
+}
+
+Set-SpikerUtf8Console
 
 $repository = 'hasan-ozdemir/spiker-packages'
 $assetName = 'spiker-setup.exe'
@@ -35,15 +72,80 @@ function Show-UserMessage {
     }
 }
 
-function Enable-ProcessScriptExecution {
+function Get-ExceptionMessage {
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    $current = $Exception
+    while ($null -ne $current) {
+        if (-not [string]::IsNullOrWhiteSpace($current.Message) -and -not $parts.Contains($current.Message)) {
+            $parts.Add($current.Message) | Out-Null
+        }
+
+        $webException = $current -as [System.Net.WebException]
+        if ($null -ne $webException) {
+            $status = $webException.Status.ToString()
+            if (-not [string]::IsNullOrWhiteSpace($status) -and -not $parts.Contains("Web durumu: $status")) {
+                $parts.Add("Web durumu: $status") | Out-Null
+            }
+
+            $httpResponse = $webException.Response -as [System.Net.HttpWebResponse]
+            if ($null -ne $httpResponse) {
+                $httpStatus = "HTTP {0} {1}" -f [int]$httpResponse.StatusCode, $httpResponse.StatusDescription
+                if (-not $parts.Contains($httpStatus)) {
+                    $parts.Add($httpStatus) | Out-Null
+                }
+            }
+        }
+
+        $current = $current.InnerException
+    }
+
+    if ($parts.Count -eq 0) {
+        return 'Bilinmeyen hata.'
+    }
+
+    return ($parts -join "`n")
+}
+
+function Initialize-Network {
     try {
-        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction Stop
-        return
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     }
     catch {
-        Write-Warning "PowerShell script yürütme izni bu oturum için otomatik ayarlanamadı: $($_.Exception.Message)"
-        Write-Warning 'Kurulum scripti bu oturumda zaten çalıştığı için devam ediliyor.'
     }
+
+    try {
+        $proxy = [System.Net.WebRequest]::DefaultWebProxy
+        if ($null -ne $proxy) {
+            $proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+        }
+    }
+    catch {
+    }
+}
+
+function Get-WindowsPowerShellPath {
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:WINDIR)) {
+        $candidates += Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+        $candidates += Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $candidates += Join-Path $env:WINDIR 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    $command = Get-Command powershell.exe -ErrorAction Stop
+    return [System.IO.Path]::GetFullPath($command.Source)
+}
+
+function Test-WindowsPowerShell51 {
+    $edition = if ($PSVersionTable.ContainsKey('PSEdition')) { [string]$PSVersionTable.PSEdition } else { '' }
+    return $edition -eq 'Desktop' -and $PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -eq 1
 }
 
 function Test-Administrator {
@@ -104,80 +206,166 @@ function Remove-SafeInstallDirectory {
     Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
 }
 
-function New-ElevatedBootstrapScript {
-    $tempRoot = Get-SafeTempRoot
-    $bootstrapPath = Join-Path $tempRoot ('spiker-install-bootstrap-' + ([Guid]::NewGuid().ToString('N')) + '.ps1')
-    $escapedBootstrapPath = $bootstrapPath.Replace("'", "''")
-    $escapedInstallerUrl = $installerScriptUrl.Replace("'", "''")
+function Test-TemporaryInstallerScript {
+    param([Parameter(Mandatory = $true)][string]$Path)
 
-    $content = @"
-`$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-`$OutputEncoding = [System.Text.Encoding]::UTF8
-
-try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-}
-catch {
-}
-
-try {
-    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
-    `$webClient = New-Object System.Net.WebClient
-    try {
-        `$webClient.Headers['User-Agent'] = 'spiker-install-bootstrap'
-        `$script = `$webClient.DownloadString('$escapedInstallerUrl')
-    }
-    finally {
-        `$webClient.Dispose()
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
     }
 
-    Invoke-Expression `$script
+    $tempRootFull = Get-SafeTempRoot
+    $pathFull = [System.IO.Path]::GetFullPath($Path)
+    if (-not $pathFull.StartsWith($tempRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    $fileName = [System.IO.Path]::GetFileName($pathFull)
+    return $fileName.StartsWith('spiker-install-', [System.StringComparison]::OrdinalIgnoreCase) -and
+        $fileName.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)
 }
-catch {
-    `$message = 'Spiker kurulumu başlatılamadı: ' + `$_.Exception.Message
+
+function Remove-TemporaryInstallerScript {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (Test-TemporaryInstallerScript -Path $Path) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Save-UrlFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $uri = [System.Uri]$Url
+    if ($uri.Scheme -ne 'https') {
+        throw "Güvenli olmayan indirme adresi: $Url"
+    }
+
+    $directory = Split-Path -Parent $Destination
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        New-Item -Path $directory -ItemType Directory -Force | Out-Null
+    }
+
+    $temporaryDestination = $Destination + '.download'
+    Remove-Item -LiteralPath $temporaryDestination -Force -ErrorAction SilentlyContinue
     try {
-        `$shell = New-Object -ComObject WScript.Shell
-        `$null = `$shell.Popup(`$message, 0, 'Spiker Kurulum', 16)
+        Invoke-WebRequest `
+            -Uri $Url `
+            -OutFile $temporaryDestination `
+            -UseBasicParsing `
+            -Headers @{ 'User-Agent' = $userAgent } `
+            -ErrorAction Stop
+
+        Move-Item -LiteralPath $temporaryDestination -Destination $Destination -Force
     }
     catch {
-        Write-Error `$message
+        Remove-Item -LiteralPath $temporaryDestination -Force -ErrorAction SilentlyContinue
+        throw "$Description indirilemedi.`nAdres: $Url`nAyrıntı: $(Get-ExceptionMessage -Exception $_.Exception)"
+    }
+}
+
+function Write-Utf8BomFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    [System.IO.File]::WriteAllText($Path, $Content, $script:Utf8Bom)
+}
+
+function New-InstallerScriptFile {
+    $tempRoot = Get-SafeTempRoot
+    $scriptPath = Join-Path $tempRoot ('spiker-install-' + ([Guid]::NewGuid().ToString('N')) + '.ps1')
+    if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
+        $content = [System.IO.File]::ReadAllText($PSCommandPath, [System.Text.Encoding]::UTF8)
+        Write-Utf8BomFile -Path $scriptPath -Content $content
+    }
+    else {
+        try {
+            $response = Invoke-WebRequest `
+                -Uri $installerScriptUrl `
+                -UseBasicParsing `
+                -Headers @{ 'User-Agent' = $userAgent } `
+                -ErrorAction Stop
+            $content = [string]$response.Content
+            if ([string]::IsNullOrWhiteSpace($content)) {
+                throw 'İndirilen script içeriği boş.'
+            }
+
+            Write-Utf8BomFile -Path $scriptPath -Content $content
+        }
+        catch {
+            throw "Spiker kurulum scripti indirilemedi.`nAdres: $installerScriptUrl`nAyrıntı: $(Get-ExceptionMessage -Exception $_.Exception)"
+        }
     }
 
-    exit 1
-}
-finally {
-    Remove-Item -LiteralPath '$escapedBootstrapPath' -Force -ErrorAction SilentlyContinue
-}
-"@
-
-    Set-Content -LiteralPath $bootstrapPath -Value $content -Encoding UTF8
-    return $bootstrapPath
+    return $scriptPath
 }
 
-function Start-ElevatedInstaller {
-    Write-Info 'Spiker kurulumu yönetici izni gerektiriyor.'
-    Write-Info 'Birazdan Windows izin penceresi açılacak. Lütfen izin verin.'
+function Start-RequiredPowerShellHost {
+    $needsWindowsPowerShell51 = -not (Test-WindowsPowerShell51)
+    $needsAdministrator = -not (Test-Administrator)
+    if (-not $needsWindowsPowerShell51 -and -not $needsAdministrator) {
+        return $false
+    }
 
-    $bootstrapPath = New-ElevatedBootstrapScript
-    $powerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+    if ($RelaunchedForRequiredHost.IsPresent) {
+        if ($needsWindowsPowerShell51) {
+            throw 'Kurulum Windows PowerShell 5.1 altında başlatılamadı.'
+        }
+
+        throw 'Yönetici izni alınamadı veya PowerShell yönetici olarak başlatılamadı.'
+    }
+
+    if ($needsWindowsPowerShell51) {
+        Write-Info 'Kurulum Windows PowerShell 5.1 ile yeniden başlatılacak.'
+    }
+
+    if ($needsAdministrator) {
+        Write-Info 'Spiker kurulumu yönetici izni gerektiriyor.'
+        Write-Info 'Birazdan Windows izin penceresi açılacak. Lütfen izin verin.'
+    }
+
+    $scriptPath = New-InstallerScriptFile
+    $powerShell = Get-WindowsPowerShellPath
 
     try {
-        Start-Process -FilePath $powerShell -ArgumentList @(
+        $startArguments = @{
+            FilePath = $powerShell
+            ArgumentList = @(
             '-NoProfile',
             '-ExecutionPolicy',
             'Bypass',
             '-File',
-            "`"$bootstrapPath`""
-        ) -Verb RunAs -WindowStyle Normal | Out-Null
+            "`"$scriptPath`"",
+            '-RelaunchedForRequiredHost'
+            )
+            WindowStyle = 'Normal'
+            PassThru = $true
+            Wait = $true
+        }
+        if ($needsAdministrator) {
+            $startArguments.Verb = 'RunAs'
+        }
+
+        $process = Start-Process @startArguments
+        $exitCode = if ($null -ne $process.ExitCode) { [int]$process.ExitCode } else { 0 }
+        if (@(0, 3010) -notcontains $exitCode) {
+            throw "Yönetici PowerShell işlemi $exitCode çıkış koduyla sonlandı."
+        }
     }
     catch {
-        Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
-        Show-UserMessage -Message "Yönetici izni alınamadı. Spiker kurulumu başlatılamadı.`n`n$($_.Exception.Message)" -Icon 16
+        Show-UserMessage -Message "Spiker kurulumu gerekli PowerShell oturumunda başlatılamadı.`n`n$(Get-ExceptionMessage -Exception $_.Exception)" -Icon 16
         throw
     }
+    finally {
+        Remove-TemporaryInstallerScript -Path $scriptPath
+    }
 
-    Write-Info 'Yönetici kurulum penceresi başlatıldı. Bu pencere kapanabilir.'
+    return $true
 }
 
 function Hide-ConsoleWindow {
@@ -210,9 +398,14 @@ public static class SpikerConsoleWindow
 function Invoke-GitHubRequest {
     param([Parameter(Mandatory = $true)][string]$Uri)
 
-    Invoke-RestMethod -Uri $Uri -Headers @{
-        Accept = 'application/vnd.github+json'
-        'User-Agent' = $userAgent
+    try {
+        Invoke-RestMethod -Uri $Uri -UseBasicParsing -Headers @{
+            Accept = 'application/vnd.github+json'
+            'User-Agent' = $userAgent
+        }
+    }
+    catch {
+        throw "GitHub yayın bilgisi alınamadı.`nAdres: $Uri`nAyrıntı: $(Get-ExceptionMessage -Exception $_.Exception)"
     }
 }
 
@@ -252,14 +445,7 @@ function Save-SetupAsset {
     }
 
     Write-Info "Kurulum paketi indiriliyor: $($Asset.ReleaseTag)"
-    $webClient = New-Object System.Net.WebClient
-    try {
-        $webClient.Headers['User-Agent'] = $userAgent
-        $webClient.DownloadFile($Asset.DownloadUrl, $Destination)
-    }
-    finally {
-        $webClient.Dispose()
-    }
+    Save-UrlFile -Url $Asset.DownloadUrl -Destination $Destination -Description 'Spiker kurulum paketi'
 
     $downloaded = Get-Item -LiteralPath $Destination
     if ($downloaded.Length -le 0) {
@@ -303,22 +489,14 @@ function Get-SetupExitCode {
     return $innerExitCode
 }
 
-try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-}
-catch {
-}
-
 $installDirectory = $null
 try {
-    Enable-ProcessScriptExecution
-
-    if (-not (Test-Administrator)) {
-        Start-ElevatedInstaller
+    Initialize-Network
+    if (Start-RequiredPowerShellHost) {
         return
     }
 
-    Write-Info 'Yönetici izni doğrulandı.'
+    Write-Info 'Windows PowerShell 5.1 ve yönetici izni doğrulandı.'
     $installDirectory = Get-SafeInstallDirectory
     $setupPath = Join-Path $installDirectory $assetName
     $setupExitCodePath = Join-Path $installDirectory 'spiker-setup-exit-code.txt'
@@ -340,7 +518,7 @@ try {
     }
 }
 catch {
-    Show-UserMessage -Message "Spiker kurulumu tamamlanamadı.`n`n$($_.Exception.Message)" -Icon 16
+    Show-UserMessage -Message "Spiker kurulumu tamamlanamadı.`n`n$(Get-ExceptionMessage -Exception $_.Exception)" -Icon 16
     throw
 }
 finally {
@@ -352,5 +530,9 @@ finally {
         catch {
             Show-UserMessage -Message "Geçici Spiker kurulum klasörü temizlenemedi:`n$installDirectory`n`n$($_.Exception.Message)" -Icon 48
         }
+    }
+
+    if ($PSCommandPath) {
+        Remove-TemporaryInstallerScript -Path $PSCommandPath
     }
 }

@@ -48,6 +48,7 @@ Set-SpikerUtf8Console
 
 $repository = 'hasan-ozdemir/spiker-packages'
 $assetName = 'spiker-setup.exe'
+$targetInstallDirectory = 'C:\prodyum\spiker'
 $installerScriptUrl = if ([string]::IsNullOrWhiteSpace($DownloaderUrl)) {
     'https://raw.githubusercontent.com/hasan-ozdemir/spiker-packages/main/spiker-setup-downloader.ps1'
 }
@@ -239,6 +240,389 @@ function Remove-TemporaryInstallerScript {
 
     if (Test-TemporaryInstallerScript -Path $Path) {
         Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Add-RestartManagerType {
+    if ($null -ne ([System.Management.Automation.PSTypeName]'SpikerInstaller.RestartManager').Type) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace SpikerInstaller
+{
+    public static class RestartManager
+    {
+        private const int CchRmSessionKey = 32;
+        private const int ErrorMoreData = 234;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FILETIME
+        {
+            public uint dwLowDateTime;
+            public uint dwHighDateTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RM_UNIQUE_PROCESS
+        {
+            public int dwProcessId;
+            public FILETIME ProcessStartTime;
+        }
+
+        private enum RM_APP_TYPE
+        {
+            RmUnknownApp = 0,
+            RmMainWindow = 1,
+            RmOtherWindow = 2,
+            RmService = 3,
+            RmExplorer = 4,
+            RmConsole = 5,
+            RmCritical = 1000
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct RM_PROCESS_INFO
+        {
+            public RM_UNIQUE_PROCESS Process;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+            public string strAppName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+            public string strServiceShortName;
+            public RM_APP_TYPE ApplicationType;
+            public uint AppStatus;
+            public uint TSSessionId;
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool bRestartable;
+        }
+
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        private static extern int RmStartSession(out uint pSessionHandle, int dwSessionFlags, StringBuilder strSessionKey);
+
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        private static extern int RmRegisterResources(
+            uint pSessionHandle,
+            uint nFiles,
+            string[] rgsFilenames,
+            uint nApplications,
+            IntPtr rgApplications,
+            uint nServices,
+            string[] rgsServiceNames);
+
+        [DllImport("rstrtmgr.dll")]
+        private static extern int RmGetList(
+            uint dwSessionHandle,
+            out uint pnProcInfoNeeded,
+            ref uint pnProcInfo,
+            [In, Out] RM_PROCESS_INFO[] rgAffectedApps,
+            ref uint lpdwRebootReasons);
+
+        [DllImport("rstrtmgr.dll")]
+        private static extern int RmEndSession(uint pSessionHandle);
+
+        public static int[] GetLockingProcessIds(string[] resources)
+        {
+            if (resources == null || resources.Length == 0)
+            {
+                return new int[0];
+            }
+
+            uint handle;
+            var key = new StringBuilder(CchRmSessionKey + 1);
+            var result = RmStartSession(out handle, 0, key);
+            if (result != 0)
+            {
+                throw new Win32Exception(result, "Restart Manager oturumu başlatılamadı.");
+            }
+
+            try
+            {
+                const int chunkSize = 128;
+                for (var index = 0; index < resources.Length; index += chunkSize)
+                {
+                    var count = Math.Min(chunkSize, resources.Length - index);
+                    var chunk = new string[count];
+                    Array.Copy(resources, index, chunk, 0, count);
+                    result = RmRegisterResources(handle, (uint)chunk.Length, chunk, 0, IntPtr.Zero, 0, null);
+                    if (result != 0)
+                    {
+                        throw new Win32Exception(result, "Restart Manager kaynak kaydı başarısız oldu.");
+                    }
+                }
+
+                uint needed;
+                uint countInfo = 0;
+                uint rebootReasons = 0;
+                result = RmGetList(handle, out needed, ref countInfo, null, ref rebootReasons);
+                if (result == 0)
+                {
+                    return new int[0];
+                }
+
+                if (result != ErrorMoreData)
+                {
+                    throw new Win32Exception(result, "Restart Manager process listesi alınamadı.");
+                }
+
+                countInfo = needed;
+                var processes = new RM_PROCESS_INFO[countInfo];
+                result = RmGetList(handle, out needed, ref countInfo, processes, ref rebootReasons);
+                if (result != 0)
+                {
+                    throw new Win32Exception(result, "Restart Manager process listesi okunamadı.");
+                }
+
+                var ids = new HashSet<int>();
+                for (var index = 0; index < countInfo; index++)
+                {
+                    var id = processes[index].Process.dwProcessId;
+                    if (id > 0)
+                    {
+                        ids.Add(id);
+                    }
+                }
+
+                var output = new int[ids.Count];
+                ids.CopyTo(output);
+                return output;
+            }
+            finally
+            {
+                RmEndSession(handle);
+            }
+        }
+    }
+}
+'@
+}
+
+function Get-SpikerInstallResources {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return @()
+    }
+
+    $resources = New-Object System.Collections.Generic.List[string]
+    foreach ($item in Get-ChildItem -LiteralPath $Path -Recurse -Force -File -ErrorAction SilentlyContinue) {
+        $resources.Add([System.IO.Path]::GetFullPath($item.FullName)) | Out-Null
+    }
+
+    return @($resources | Select-Object -Unique)
+}
+
+function Get-LockingProcessIds {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $resources = @(Get-SpikerInstallResources -Path $Path)
+    if ($resources.Count -eq 0) {
+        return @()
+    }
+
+    Add-RestartManagerType
+    return @([SpikerInstaller.RestartManager]::GetLockingProcessIds($resources))
+}
+
+function Get-ProcessRestartInfo {
+    param([Parameter(Mandatory = $true)][object[]]$ProcessIds)
+
+    $currentProcessId = [System.Diagnostics.Process]::GetCurrentProcess().Id
+    $infos = @()
+    foreach ($rawProcessId in ($ProcessIds | Sort-Object -Unique)) {
+        $processId = [int]$rawProcessId
+        if ($processId -eq $currentProcessId) {
+            continue
+        }
+
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+        if ($null -eq $processInfo) {
+            continue
+        }
+
+        $commandLine = [string]$processInfo.CommandLine
+        $executablePath = [string]$processInfo.ExecutablePath
+        if ([string]::IsNullOrWhiteSpace($commandLine) -and [string]::IsNullOrWhiteSpace($executablePath)) {
+            throw "Process yeniden başlatma bilgisi alınamadı. PID=$processId"
+        }
+
+        $infos += [pscustomobject]@{
+            ProcessId = [int]$processInfo.ProcessId
+            Name = [string]$processInfo.Name
+            ExecutablePath = $executablePath
+            CommandLine = $commandLine
+        }
+    }
+
+    return @($infos)
+}
+
+function Split-ProcessCommandLine {
+    param(
+        [Parameter(Mandatory = $false)][string]$ExecutablePath,
+        [Parameter(Mandatory = $false)][string]$CommandLine
+    )
+
+    $command = if ([string]::IsNullOrWhiteSpace($CommandLine)) { '' } else { $CommandLine.Trim() }
+    if ([string]::IsNullOrWhiteSpace($command)) {
+        if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
+            throw 'Process komut satırı boş.'
+        }
+
+        return [pscustomobject]@{ FileName = $ExecutablePath; Arguments = '' }
+    }
+
+    $parsedFile = ''
+    $parsedArguments = ''
+    if ($command.StartsWith('"')) {
+        $endQuote = $command.IndexOf('"', 1)
+        if ($endQuote -lt 0) {
+            throw "Process komut satırı ayrıştırılamadı: $command"
+        }
+
+        $parsedFile = $command.Substring(1, $endQuote - 1)
+        $parsedArguments = $command.Substring($endQuote + 1).TrimStart()
+    }
+    else {
+        $space = $command.IndexOf(' ')
+        if ($space -lt 0) {
+            $parsedFile = $command
+            $parsedArguments = ''
+        }
+        else {
+            $parsedFile = $command.Substring(0, $space)
+            $parsedArguments = $command.Substring($space + 1).TrimStart()
+        }
+    }
+
+    $fileName = if (-not [string]::IsNullOrWhiteSpace($ExecutablePath)) { $ExecutablePath } else { $parsedFile }
+    if (-not [string]::IsNullOrWhiteSpace($ExecutablePath)) {
+        $sameExecutable =
+            [string]::Equals($parsedFile, $ExecutablePath, [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals([System.IO.Path]::GetFileName($parsedFile), [System.IO.Path]::GetFileName($ExecutablePath), [System.StringComparison]::OrdinalIgnoreCase)
+        if (-not $sameExecutable) {
+            $parsedArguments = $command
+        }
+    }
+
+    return [pscustomobject]@{ FileName = $fileName; Arguments = $parsedArguments }
+}
+
+function Stop-ProcessesForInstallCleanup {
+    param([Parameter(Mandatory = $true)][object[]]$Processes)
+
+    foreach ($processInfo in $Processes) {
+        Write-Info ("Spiker klasörünü kullanan process durduruluyor: {0} (PID {1})" -f $processInfo.Name, $processInfo.ProcessId)
+        $process = Get-Process -Id $processInfo.ProcessId -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            continue
+        }
+
+        try {
+            if ($process.MainWindowHandle -ne 0) {
+                $null = $process.CloseMainWindow()
+                if ($process.WaitForExit(10000)) {
+                    continue
+                }
+            }
+        }
+        catch {
+        }
+
+        Stop-Process -Id $processInfo.ProcessId -Force -ErrorAction SilentlyContinue
+        try {
+            $process.WaitForExit(10000) | Out-Null
+        }
+        catch {
+        }
+    }
+}
+
+function Restart-ProcessesForInstallCleanup {
+    param([Parameter(Mandatory = $true)][object[]]$Processes)
+
+    foreach ($processInfo in $Processes) {
+        $command = Split-ProcessCommandLine -ExecutablePath $processInfo.ExecutablePath -CommandLine $processInfo.CommandLine
+        if ([string]::IsNullOrWhiteSpace($command.FileName)) {
+            throw "Process yeniden başlatılamadı; çalıştırılabilir dosya yolu yok. PID=$($processInfo.ProcessId)"
+        }
+
+        Write-Info ("Process yeniden başlatılıyor: {0}" -f $processInfo.Name)
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $command.FileName
+        $startInfo.Arguments = $command.Arguments
+        if (Test-Path -LiteralPath $command.FileName -PathType Leaf) {
+            $startInfo.WorkingDirectory = Split-Path -Parent $command.FileName
+        }
+
+        $startInfo.UseShellExecute = $false
+        $started = [System.Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $started) {
+            throw "Process yeniden başlatılamadı: $($processInfo.Name)"
+        }
+    }
+}
+
+function Clear-SpikerInstallDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if (-not [string]::Equals($fullPath, 'C:\prodyum\spiker', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Güvenli olmayan kurulum temizlik yolu: $Path"
+    }
+
+    $backupPath = $null
+    $iniPath = Join-Path $Path 'spiker.ini'
+    if (Test-Path -LiteralPath $iniPath -PathType Leaf) {
+        $backupPath = Join-Path (Get-SafeTempRoot) ('spiker-ini-backup-' + ([Guid]::NewGuid().ToString('N')) + '.ini')
+        Copy-Item -LiteralPath $iniPath -Destination $backupPath -Force
+    }
+
+    try {
+        foreach ($item in Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue) {
+            Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+        }
+
+        if ($null -ne $backupPath -and (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
+            New-Item -Path $Path -ItemType Directory -Force | Out-Null
+            Copy-Item -LiteralPath $backupPath -Destination $iniPath -Force
+        }
+    }
+    finally {
+        if ($null -ne $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Invoke-SpikerInstallPreflight {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    Write-Info "Kurulum klasörü kontrol ediliyor: $Path"
+    $lockingProcessIds = @(Get-LockingProcessIds -Path $Path)
+    $restartInfos = @(Get-ProcessRestartInfo -ProcessIds $lockingProcessIds)
+    if ($restartInfos.Count -gt 0) {
+        Stop-ProcessesForInstallCleanup -Processes $restartInfos
+    }
+
+    Write-Info 'Kurulum klasörü temizleniyor. spiker.ini korunacak.'
+    Clear-SpikerInstallDirectory -Path $Path
+
+    if ($restartInfos.Count -gt 0) {
+        Restart-ProcessesForInstallCleanup -Processes $restartInfos
     }
 }
 
@@ -529,6 +913,8 @@ try {
     }
 
     Write-Info 'Windows PowerShell 5.1 ve yönetici izni doğrulandı.'
+    Invoke-SpikerInstallPreflight -Path $targetInstallDirectory
+
     $installDirectory = Get-SafeInstallDirectory
     $setupPath = Join-Path $installDirectory $assetName
     $setupExitCodePath = Join-Path $installDirectory 'spiker-setup-exit-code.txt'

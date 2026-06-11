@@ -25,8 +25,8 @@ try {
     $fakeBin = Join-Path $tempRoot 'bin'
     New-Item -ItemType Directory -Path $workRepo, $fakeBin | Out-Null
 
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'spiker-pin-release.ps1') -Destination $workRepo
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'spiker-unpin-and-purge-release.ps1') -Destination $workRepo
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'pin-release-version.ps1') -Destination $workRepo
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'unpin-release-version.ps1') -Destination $workRepo
     Copy-Item -LiteralPath (Join-Path $repoRoot 'release-pins.json') -Destination $workRepo
 
     $deleteLog = Join-Path $tempRoot 'deleted.txt'
@@ -34,9 +34,13 @@ try {
     Set-Content -LiteralPath $fakeGh -Encoding ASCII -Value @'
 @echo off
 if "%1"=="release" if "%2"=="list" (
-  echo 2.0.0
+  echo v2026.6.12.200
   echo latest
-  echo 1.0.0
+  echo v2026.6.11.199
+  exit /b 0
+)
+if "%1"=="release" if "%2"=="view" if "%3"=="latest" (
+  echo Current version release: v2026.6.12.200
   exit /b 0
 )
 if "%1"=="release" if "%2"=="view" exit /b 0
@@ -56,14 +60,14 @@ exit /b 0
     git -C $workRepo add .
     git -C $workRepo commit -m init | Out-Null
 
-    & (Join-Path $workRepo 'spiker-pin-release.ps1') -Current -NoPush
+    & (Join-Path $workRepo 'pin-release-version.ps1') --latest -NoPush
     $manifest = Get-Content -LiteralPath (Join-Path $workRepo 'release-pins.json') -Raw | ConvertFrom-Json
-    Assert-True -Condition (@($manifest.pinnedReleaseTags) -contains '2.0.0') -Message 'Current release pin was not written.'
+    Assert-True -Condition (@($manifest.pinnedReleaseTags) -contains 'v2026.6.12.200') -Message 'Current release pin was not written.'
 
-    & (Join-Path $workRepo 'spiker-unpin-and-purge-release.ps1') -ReleaseTag '2.0.0' -NoPush
+    & (Join-Path $workRepo 'unpin-release-version.ps1') --commit-number=200 -NoPush
     $manifest = Get-Content -LiteralPath (Join-Path $workRepo 'release-pins.json') -Raw | ConvertFrom-Json
-    Assert-True -Condition (-not (@($manifest.pinnedReleaseTags) -contains '2.0.0')) -Message 'Pinned release was not removed.'
-    Assert-True -Condition ((Get-Content -LiteralPath $deleteLog -Raw).Trim() -eq '2.0.0') -Message 'Pinned release was not purged through gh.'
+    Assert-True -Condition (-not (@($manifest.pinnedReleaseTags) -contains 'v2026.6.12.200')) -Message 'Pinned release was not removed.'
+    Assert-True -Condition ((Get-Content -LiteralPath $deleteLog -Raw).Trim() -eq 'v2026.6.12.200') -Message 'Pinned release was not purged through gh.'
 
     $downloader = Get-Content -LiteralPath (Join-Path $repoRoot 'spiker-setup-downloader.ps1') -Raw
     Assert-True -Condition ($downloader.Contains('releases/download/latest')) -Message 'Downloader does not use the stable latest asset URL.'

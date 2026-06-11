@@ -52,16 +52,16 @@ function Set-SpikerUtf8Console {
 
 Set-SpikerUtf8Console
 
-$repository = 'hasan-ozdemir/spiker-packages'
+$repository = 'hasan-ozdemir/spiker-setup'
 $assetName = 'spiker-setup.exe'
+$latestSetupAssetUrl = "https://github.com/$repository/releases/download/latest/$assetName"
 $installerScriptUrl = if ([string]::IsNullOrWhiteSpace($DownloaderUrl)) {
-    'https://raw.githubusercontent.com/hasan-ozdemir/spiker-packages/main/spiker-setup-downloader.ps1'
+    'https://raw.githubusercontent.com/hasan-ozdemir/spiker-setup/main/spiker-setup-downloader.ps1'
 }
 else {
     $DownloaderUrl
 }
-$releaseApiUrl = "https://api.github.com/repos/$repository/releases/latest"
-$userAgent = 'spiker-install'
+$userAgent = 'spiker-setup'
 $originalProgressPreference = $ProgressPreference
 $ProgressPreference = 'SilentlyContinue'
 $script:SuppressTopLevelUserMessage = $false
@@ -978,26 +978,13 @@ function Invoke-GitHubRequest {
 }
 
 function Get-LatestSetupAsset {
-    Write-Info 'En son Spiker kurulum yayını aranıyor...'
-    $release = Invoke-GitHubRequest -Uri $releaseApiUrl
-    if ($null -eq $release.assets) {
-        throw 'GitHub yayınında indirilebilir dosya bulunamadı.'
-    }
-
-    $asset = @($release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1)
-    if ($asset.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$asset[0].browser_download_url)) {
-        throw "En son GitHub yayınında $assetName bulunamadı."
-    }
-
-    $digestProperty = $asset[0].PSObject.Properties['digest']
-    $digest = if ($null -ne $digestProperty) { [string]$digestProperty.Value } else { '' }
-
+    Write-Info 'En son Spiker kurulum paketi hazırlanıyor...'
     return [pscustomobject]@{
-        ReleaseName = [string]$release.name
-        ReleaseTag = [string]$release.tag_name
-        DownloadUrl = [string]$asset[0].browser_download_url
-        Size = [int64]$asset[0].size
-        Digest = $digest
+        ReleaseName = 'Spiker Setup latest'
+        ReleaseTag = 'latest'
+        DownloadUrl = $latestSetupAssetUrl
+        Size = [int64]0
+        Digest = ''
     }
 }
 
@@ -1093,9 +1080,9 @@ try {
     $script:SetupLogPath = Join-Path $installDirectory 'spiker-setup-silent.log'
 
     Set-InstallerStep `
-        -Step 'GitHub release bilgisi alma' `
-        -Action 'hasan-ozdemir/spiker-packages latest release bilgisi okunuyor.' `
-        -Expected "Latest release içinde indirilebilir $assetName asset'i bulunmalı."
+        -Step 'GitHub latest kurulum adresini hazırlama' `
+        -Action "hasan-ozdemir/spiker-setup latest kurulum paketi adresi hazırlanıyor." `
+        -Expected "Sabit latest adresinden indirilebilir $assetName asset'i bulunmalı."
     $asset = Get-LatestSetupAsset
 
     Set-InstallerStep `

@@ -3,8 +3,8 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$repository = 'hasan-ozdemir/spiker-packages'
-$userAgent = 'spiker-install'
+$repository = 'hasan-ozdemir/spiker-setup'
+$userAgent = 'spiker-setup'
 $headers = @{
     Accept = 'application/vnd.github+json'
     'User-Agent' = $userAgent
@@ -78,7 +78,7 @@ try {
     $branchUrl = "https://api.github.com/repos/$repository/branches/main"
     $sha = [string](Invoke-RestMethod -Uri $branchUrl -UseBasicParsing -Headers $headers).commit.sha
     if ([string]::IsNullOrWhiteSpace($sha) -or $sha -notmatch '^[0-9a-fA-F]{40}$') {
-        throw 'spiker-packages main dalı için geçerli commit bilgisi alınamadı.'
+        throw 'spiker-setup main dalı için geçerli commit bilgisi alınamadı.'
     }
 
     $downloaderUrl = "https://raw.githubusercontent.com/$repository/$sha/spiker-setup-downloader.ps1"

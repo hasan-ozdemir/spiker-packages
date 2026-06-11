@@ -53,6 +53,9 @@ jobs:
       RELEASE_TITLE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_title || github.event.client_payload.release_title }}
       PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || github.event.client_payload.prerelease }}
     steps:
+      - name: Checkout release metadata
+        uses: actions/checkout@v4
+
       - name: Validate dispatch metadata
         shell: bash
         run: |
@@ -143,6 +146,32 @@ jobs:
             gh "${args[@]}"
           fi
 
+          latest_notes_file="$(mktemp)"
+          {
+            echo "Spiker setup latest package."
+            echo "Current version release: $RELEASE_TAG"
+            echo "Source run: $SOURCE_RUN_URL"
+            echo "Source repository: $SOURCE_REPOSITORY"
+            echo "Source branch/tag: $SOURCE_REF"
+            echo "Source commit: $SOURCE_SHA"
+            echo "SHA256: $sha256"
+          } > "$latest_notes_file"
+
+          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Spiker Setup latest" \
+              --notes-file "$latest_notes_file"
+            gh release upload latest "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create latest "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Spiker Setup latest" \
+              --notes-file "$latest_notes_file"
+          fi
+
       - name: Cut over old releases
         if: ${{ env.SOURCE_EVENT == 'push' && env.SOURCE_REF == 'main' }}
         shell: bash
@@ -150,6 +179,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          pinned_tags=()
+          if [[ -f release-pins.json ]]; then
+            mapfile -t pinned_tags < <(jq -r '(.pinnedReleaseTags // [])[]' release-pins.json)
+          fi
+
+          is_pinned_release() {
+            local candidate="$1"
+            local pinned
+            for pinned in "${pinned_tags[@]}"; do
+              if [[ "$candidate" == "$pinned" ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
           mapfile -t release_tags < <(gh release list \
             --repo "$GITHUB_REPOSITORY" \
             --limit 1000 \
@@ -159,6 +204,15 @@ jobs:
           deleted=0
           for tag in "${release_tags[@]}"; do
             if [[ "$tag" == "$RELEASE_TAG" ]]; then
+              continue
+            fi
+
+            if [[ "$tag" == "latest" ]]; then
+              continue
+            fi
+
+            if is_pinned_release "$tag"; then
+              echo "Keeping pinned release: $tag"
               continue
             fi
 
@@ -176,15 +230,14 @@ jobs:
             --json tagName \
             --jq '.[].tagName')
 
-          remaining_count="${#remaining_tags[@]}"
-          if [[ "$remaining_count" -ne 1 ]]; then
-            printf '::error::Expected only release %s to remain; found: %s\n' "$RELEASE_TAG" "${remaining_tags[*]:-<none>}"
+          if ! printf '%s\n' "${remaining_tags[@]}" | grep -Fxq "$RELEASE_TAG"; then
+            printf '::error::Expected current release %s to remain; found: %s\n' "$RELEASE_TAG" "${remaining_tags[*]:-<none>}"
             exit 6
           fi
 
-          if [[ "${remaining_tags[0]}" != "$RELEASE_TAG" ]]; then
-            printf '::error::Expected remaining release %s; found %s\n' "$RELEASE_TAG" "${remaining_tags[0]}"
+          if ! printf '%s\n' "${remaining_tags[@]}" | grep -Fxq latest; then
+            printf '::error::Expected latest release alias to remain; found: %s\n' "${remaining_tags[*]:-<none>}"
             exit 6
           fi
 
-          echo "Cutover complete. Deleted $deleted old release(s); kept $RELEASE_TAG."
+          echo "Cutover complete. Deleted $deleted old release(s); kept $RELEASE_TAG, latest, and ${#pinned_tags[@]} pinned release(s)."

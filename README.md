@@ -13,10 +13,10 @@ En kolay yöntem:
 3. Enter'a basın ve açılan Spiker kurulum penceresini takip edin.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/hasan-ozdemir/spiker-packages/main/spiker-install.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/hasan-ozdemir/spiker-setup/main/spiker-setup.ps1 | iex"
 ```
 
-Bu komut, bu repodaki küçük `spiker-install.ps1` wrapper scriptini indirip çalıştırır. Wrapper, GitHub API üzerinden `main` dalının son commit SHA'sını alır ve gerçek kurulum iş akışını o committeki `spiker-setup-downloader.ps1` dosyasına devreder. Script Windows PowerShell 5.1 ve yönetici izni gerektirir; gerekirse kendini bu oturumda yeniden başlatır ve Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan sıkıştırılmış `spiker-setup.exe` dosyası `%LOCALAPPDATA%\Temp\spiker-setup` klasörüne indirilir.
+Bu komut, bu repodaki küçük `spiker-setup.ps1` wrapper scriptini indirip çalıştırır. Wrapper, GitHub API üzerinden `main` dalının son commit SHA'sını alır ve gerçek kurulum iş akışını o committeki `spiker-setup-downloader.ps1` dosyasına devreder. Script Windows PowerShell 5.1 ve yönetici izni gerektirir; gerekirse kendini bu oturumda yeniden başlatır ve Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan sıkıştırılmış `spiker-setup.exe` dosyası `%LOCALAPPDATA%\Temp\spiker-setup` klasörüne indirilir.
 
 Kurulum paketi arada 7-Zip penceresi göstermeden sessizce açılır ve Spiker kurulum asistanı başlar. Kurulum asistanı açıldığında PowerShell penceresi otomatik gizlenir. Kurulum başarıyla tamamlandığında geçici `%LOCALAPPDATA%\Temp\spiker-setup` klasörü içindeki dosyalarla birlikte silinir.
 
@@ -30,7 +30,7 @@ Komut kullanmak istemezseniz:
 
 Güncel release:
 
-https://github.com/hasan-ozdemir/spiker-packages/releases/latest
+https://github.com/hasan-ozdemir/spiker-setup/releases/download/latest/spiker-setup.exe
 
 ## Kurulumdan Sonra
 
@@ -40,8 +40,8 @@ Kurulum paketi `C:\prodyum\spiker` altına kurulur. Mevcut ayarlar korunur; gün
 
 ## Güvenlik Notu
 
-`spiker-install.ps1` yalnızca bu repodaki en son release içindeki `spiker-setup.exe` dosyasını indirir. İndirme HTTPS üzerinden yapılır; GitHub release asset digest bilgisi varsa SHA256 doğrulaması da yapılır. Script, sıkıştırılmış dış paketin değil gerçek Spiker kurulum asistanının çıkış sonucunu kontrol eder; kullanıcı isteğiyle kapatma normal kabul edilir, gerçek kurulum hataları hangi adımda ne beklenirken ne olduğu bilgisiyle bildirilir. İndirme tamamlanana kadar geçici `.download` dosyası kullanılır; başarılı kurulumdan sonra geçici kurulum dosyaları silinir, başarısız kurulumda `%LOCALAPPDATA%\Temp\spiker-setup` klasörü tanılama için bırakılır.
+`spiker-setup.ps1` yalnızca bu repodaki `latest` release alias'ı altındaki `spiker-setup.exe` dosyasını indirir. İndirme HTTPS üzerinden yapılır. Script, sıkıştırılmış dış paketin değil gerçek Spiker kurulum asistanının çıkış sonucunu kontrol eder; kullanıcı isteğiyle kapatma normal kabul edilir, gerçek kurulum hataları hangi adımda ne beklenirken ne olduğu bilgisiyle bildirilir. İndirme tamamlanana kadar geçici `.download` dosyası kullanılır; başarılı kurulumdan sonra geçici kurulum dosyaları silinir, başarısız kurulumda `%LOCALAPPDATA%\Temp\spiker-setup` klasörü tanılama için bırakılır.
 
 ## Yayın Akışı
 
-Özel `hasan-ozdemir/spiker` reposunda `main` dalına yapılan her push yeni `spiker-setup.exe` paketini üretir. Bu public repo sadece en son kurulumu yayınlar; yeni paket yayınlandıktan sonra eski release'ler ve tag'ler temizlenir.
+Özel `hasan-ozdemir/spiker` reposunda `main` dalına yapılan her push yeni `spiker-setup.exe` paketini üretir. Bu public repo son kurulumu `latest` release alias'ı altında yayınlar. Eski version release'ler normalde temizlenir; `release-pins.json` içinde pinlenen release tag'leri korunur.
